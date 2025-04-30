@@ -1,11 +1,28 @@
 {
-  "name": "tcp-connection",
-  "module": "index.ts",
-  "type": "module",
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  }
+	"name": "@6qat/tcp-connection",
+	"version": "0.1.0",
+	"description": "TCP connection library with Effect.js integration",
+	"module": "dist/index.js",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"type": "module",
+	"files": ["dist", "README.md"],
+	"scripts": {
+		"build": "tsc",
+		"prepublishOnly": "npm run build",
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"keywords": ["tcp", "connection", "effect", "bun"],
+	"author": "Your Name",
+	"license": "MIT",
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5"
+	},
+	"peerDependencies": {
+		"effect": "^2.0.0"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
 }

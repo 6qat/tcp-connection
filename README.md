@@ -1,15 +1,12 @@
-# tcp-connection
+# TCP Connection
 
-To install dependencies:
+A robust TCP connection library with Effect.js integration.
 
-```bash
-bun install
-```
-
-To run:
+## Installation
 
 ```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.2.11. [Bun](https://bun.sh) is a fast all-in-one JavaScript runtime.
+bun add @6qat/tcp-connection
+# or
+npm install @6qat/tcp-connection
+# or
+yarn add @6qat/tcp-connection
