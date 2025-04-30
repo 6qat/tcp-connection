@@ -59,10 +59,10 @@ export const createTcpConnection = (options: {
             },
             error(_socket, error) {
               //Queue.unsafeOffer(incomingQueue, error)
-              Effect.runSync(performShutdown);
+              Effect.runPromise(performShutdown);
             },
             close(_socket) {
-              Effect.runSync(performShutdown);
+              Effect.runPromise(performShutdown);
             },
           },
         })
