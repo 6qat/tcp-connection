@@ -21,32 +21,30 @@ export const createTcpConnection = (options: {
       const incomingQueue = yield* Queue.unbounded<Uint8Array>();
       const outgoingQueue = yield* Queue.unbounded<Uint8Array>();
 
-      // Use refs for coordinated cleanup
-      const isClosing = yield* Ref.make(false);
-
       // Track error count
       const writeErrorCount = yield* Ref.make(0);
 
+      // Use refs for coordinated cleanup
+      const isClosing = yield* Ref.make(false);
+
       // Safely shut down once
-      const performShutdown = yield* Effect.cached(
-        Effect.gen(function* () {
-          const alreadyClosing = yield* Ref.getAndSet(isClosing, true);
-          if (alreadyClosing) return;
+      const performShutdown = Effect.gen(function* () {
+        const alreadyClosing = yield* Ref.getAndSet(isClosing, true);
+        if (alreadyClosing) return;
 
-          bunSocket.end();
+        bunSocket.end();
 
-          // Allow socket events to propagate
-          yield* Effect.sleep(Duration.millis(10));
+        // Allow socket events to propagate
+        yield* Effect.sleep(Duration.millis(10));
 
-          // Interrupt writer fiber before shutting down queues
-          yield* Fiber.interrupt(writerFiber);
+        // Interrupt writer fiber before shutting down queues
+        yield* Fiber.interrupt(writerFiber);
 
-          yield* Effect.all([
-            Queue.shutdown(incomingQueue),
-            Queue.shutdown(outgoingQueue),
-          ]);
-        })
-      );
+        yield* Effect.all([
+          Queue.shutdown(incomingQueue),
+          Queue.shutdown(outgoingQueue),
+        ]);
+      });
 
       // Create deferred for connection cleanup
       const bunSocket = yield* Effect.tryPromise(() =>
@@ -57,7 +55,7 @@ export const createTcpConnection = (options: {
             data(_socket, data) {
               Queue.unsafeOffer(incomingQueue, data);
             },
-            error(_socket, error) {
+            error(_socket, _error) {
               //Queue.unsafeOffer(incomingQueue, error)
               Effect.runPromise(performShutdown);
             },
@@ -114,7 +112,7 @@ export const createTcpConnection = (options: {
               )
             ),
         }),
-        Effect.forkScoped
+        Effect.fork
       );
 
       // Cleanup procedure
