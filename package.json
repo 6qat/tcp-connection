@@ -8,9 +8,11 @@
   "type": "module",
   "files": ["dist", "README.md"],
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "bun build --minify-syntax --minify-whitespace ./src/index.ts --outdir ./dist --target node --format esm",
+    "build:types": "bun tsc --emitDeclarationOnly --outDir dist",
+    "build:all": "bun run build && bun run build:types",
+    "prepublishOnly": "bun run build:all",
+    "test": "bun test"
   },
   "keywords": ["tcp", "connection", "effect", "bun"],
   "author": "Your Name",
