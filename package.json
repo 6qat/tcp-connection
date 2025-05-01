@@ -8,10 +8,10 @@
   "type": "module",
   "files": ["dist", "README.md"],
   "scripts": {
-    "build": "bun build --minify-syntax --minify-whitespace ./src/index.ts --outdir ./dist --target node --format esm",
+    "build:main": "bun build --minify-syntax --minify-whitespace ./src/index.ts --outdir ./dist --target node --format esm",
     "build:types": "bun tsc --emitDeclarationOnly --outDir dist",
-    "build:all": "bun run build && bun run build:types",
-    "prepublishOnly": "bun run build:all",
+    "build": "bun run build:main && bun run build:types",
+    "prepublishOnly": "bun run build",
     "test": "bun test"
   },
   "keywords": ["tcp", "connection", "effect", "bun"],
