@@ -3,7 +3,7 @@ import { Effect, Stream, Queue, pipe, Fiber, Duration, Ref } from "effect";
 // =========================================================================
 // TCP Connection with Write support
 // =========================================================================
-interface TcpConnection {
+export interface TcpConnection {
   readonly stream: Stream.Stream<Uint8Array, Error>;
   readonly send: (data: Uint8Array) => Effect.Effect<void>;
   readonly sendText: (data: string) => Effect.Effect<void>;
