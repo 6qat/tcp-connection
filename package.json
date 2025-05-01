@@ -16,11 +16,11 @@
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5"
+    "@types/bun": "^1.2.11",
+    "typescript": "^5.8.3"
   },
   "peerDependencies": {
-    "effect": "^2.0.0"
+    "effect": "3.14.18"
   },
   "publishConfig": {
     "access": "public"
