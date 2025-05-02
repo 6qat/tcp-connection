@@ -12,12 +12,14 @@
     "build:types": "bun tsc --emitDeclarationOnly --outDir dist",
     "build": "bun run build:main && bun run build:types",
     "prepublishOnly": "bun run build",
-    "test": "bun test"
+    "test": "bun test",
+    "format": "bunx biome format --write"
   },
   "keywords": ["tcp", "connection", "effect", "bun"],
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.2.11",
     "typescript": "^5.8.3"
   },
