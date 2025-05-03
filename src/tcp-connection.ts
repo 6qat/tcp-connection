@@ -16,14 +16,14 @@ import {
 import type { TimeoutException } from "effect/Cause";
 
 // Base error class with a more flexible tag system
-class TcpConnectionError extends Data.TaggedError("TcpConnectionError") {
+export class TcpConnectionError extends Data.TaggedError("TcpConnectionError") {
   constructor(readonly errorType?: string) {
     super();
   }
 }
 
 // Specific error type that extends the base error
-class BunError extends TcpConnectionError {
+export class BunError extends TcpConnectionError {
   // Override the errorType to identify specific errors
   readonly errorType = "BunError";
 

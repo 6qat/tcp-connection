@@ -8,7 +8,126 @@ import {
   Clock,
   Deferred,
 } from "effect";
-import { test, expect } from "bun:test";
+import { test, expect, mock, afterAll } from "bun:test";
+import { TcpStream, TcpConnectionError, BunError } from "./tcp-connection";
+
+// Mock Bun.Socket functionality for testing
+const createMockSocket = () => {
+  const writtenData: Uint8Array[] = [];
+
+  return {
+    socket: {
+      write: mock((data: Uint8Array) => {
+        writtenData.push(data);
+        return data.length; // Simulate successful write
+      }),
+      end: mock(() => {}),
+    },
+    writtenData,
+    emitData: (handlers: any, data: Uint8Array) => {
+      handlers.data?.(null, data);
+    },
+    emitError: (handlers: any, error: Error) => {
+      handlers.error?.(null, error);
+    },
+    emitClose: (handlers: any) => {
+      handlers.close?.(null);
+    },
+  };
+};
+
+// Mock Bun.connect
+const originalConnect = Bun.connect;
+Bun.connect = mock((options: any) => {
+  const mockSocket = createMockSocket();
+  const handlers = options.socket;
+
+  mockSocket.emitData = (data) => handlers.data?.(mockSocket.socket, data);
+  mockSocket.emitError = (error) => handlers.error?.(mockSocket.socket, error);
+  mockSocket.emitClose = () => handlers.close?.(mockSocket.socket);
+
+  // Use type assertion to tell TypeScript this is a Socket
+  return Promise.resolve(mockSocket.socket as unknown as Bun.Socket<undefined>);
+});
+
+// Restore the original after tests
+afterAll(() => {
+  Bun.connect = originalConnect;
+});
+
+test("TcpStream.connect should establish a connection", async () => {
+  const program = Effect.gen(function* () {
+    const stream = yield* TcpStream.connect({
+      host: "localhost",
+      port: 8080,
+      bufferSize: 1024,
+      connectTimeout: "1 second",
+    });
+
+    // Test the connection was successful
+    return stream instanceof TcpStream;
+  }).pipe(Effect.provide(TestContext.TestContext));
+
+  const result = await Effect.runPromise(program);
+  expect(result).toBeTrue();
+});
+
+test("TcpStream.write should send data through the socket", async () => {
+  const mockSocket = createMockSocket();
+  let capturedHandlers: any = {};
+
+  // Override connect just for this test with our specific mock
+  Bun.connect = mock((options: any) => {
+    capturedHandlers = options.socket;
+    // Return a Promise and use type assertion
+    return Promise.resolve(
+      mockSocket.socket as unknown as Bun.Socket<undefined>
+    );
+  });
+
+  const program = Effect.gen(function* () {
+    const stream = yield* TcpStream.connect({
+      host: "localhost",
+      port: 8080,
+    });
+
+    const testData = new Uint8Array([1, 2, 3, 4]);
+    const writeResult = yield* stream.write(testData);
+
+    return {
+      writeResult,
+      writtenData: mockSocket.writtenData,
+    };
+  }).pipe(Effect.provide(TestContext.TestContext));
+
+  const result = await Effect.runPromise(program);
+  expect(result.writeResult).toBeTrue();
+  expect(result.writtenData.length).toBe(1);
+  expect(result.writtenData[0]).toEqual(new Uint8Array([1, 2, 3, 4]));
+});
+
+test("TcpStream.writeText should properly encode and send text", async () => {
+  const mockSocket = createMockSocket();
+  Bun.connect = mock((options: any) =>
+    Promise.resolve(mockSocket.socket as unknown as Bun.Socket<undefined>)
+  );
+
+  const program = Effect.gen(function* () {
+    const stream = yield* TcpStream.connect({
+      host: "localhost",
+      port: 8080,
+    });
+    const writeResult = yield* stream.writeText("Hello, world!");
+    return writeResult;
+  }).pipe(Effect.provide(TestContext.TestContext));
+
+  const result = await Effect.runPromise(program);
+  expect(result).toBeTrue();
+
+  const encoder = new TextEncoder();
+  expect(mockSocket.writtenData.length).toBe(1);
+  expect(mockSocket.writtenData[0]).toEqual(encoder.encode("Hello, world!"));
+});
 
 // Bun test format
 test("timeout should work correctly", async () => {
