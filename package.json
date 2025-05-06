@@ -13,14 +13,19 @@
     "build": "bun run build:main && bun run build:types",
     "prepublishOnly": "bun run build",
     "test": "bun test",
-    "format": "bunx biome format --write"
+    "format": "prettier --write \"src/**/*.{ts,tsx}\"",
+    "lint": "eslint . --ext .ts,.tsx --config .eslintrc.cjs"
   },
   "keywords": ["tcp", "connection", "effect", "bun"],
   "author": "Your Name",
   "license": "MIT",
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.2.11",
+    "@typescript-eslint/eslint-plugin": "^8.31.1",
+    "@typescript-eslint/parser": "^8.31.1",
+    "eslint": "^9.26.0",
+    "eslint-plugin-import": "^2.31.0",
+    "prettier": "^3.5.3",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {

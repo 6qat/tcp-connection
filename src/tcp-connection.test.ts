@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { test, expect, mock, afterAll } from "bun:test";
 import {
   Effect,
   TestClock,
@@ -8,7 +11,7 @@ import {
   Clock,
   Deferred,
 } from "effect";
-import { test, expect, mock, afterAll } from "bun:test";
+
 import { TcpStream, TcpConnectionError, BunError } from "./tcp-connection";
 
 // Mock Bun.Socket functionality for testing

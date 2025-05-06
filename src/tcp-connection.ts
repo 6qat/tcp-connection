@@ -12,7 +12,6 @@ import {
   identity,
   Data,
 } from "effect";
-
 import type { TimeoutException } from "effect/Cause";
 
 // Base error class with a more flexible tag system
