@@ -1,4 +1,4 @@
-import { Effect, Stream, Queue, pipe, Fiber, Duration, Ref } from 'effect';
+import { Duration, Effect, Fiber, Queue, Ref, Stream, pipe } from 'effect';
 
 // =========================================================================
 // TCP Connection with Write support
