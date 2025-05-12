@@ -1,4 +1,4 @@
-import { Effect, Stream, Queue, pipe, Fiber, Duration, Ref } from "effect";
+import { Effect, Stream, Queue, pipe, Fiber, Duration, Ref } from 'effect';
 
 // =========================================================================
 // TCP Connection with Write support
@@ -63,14 +63,14 @@ export const createTcpConnection = (options: {
               Effect.runPromise(performShutdown);
             },
           },
-        })
+        }),
       ).pipe(
         Effect.timeout(options.timeout ?? Duration.millis(3000)),
         Effect.flatMap((maybeSocket) =>
           maybeSocket
             ? Effect.succeed(maybeSocket)
-            : Effect.fail(new Error("Connection timeout"))
-        )
+            : Effect.fail(new Error('Connection timeout')),
+        ),
       );
 
       // Fiber for writing outgoing data
@@ -85,39 +85,39 @@ export const createTcpConnection = (options: {
                   try: () => {
                     const bytesWritten = bunSocket.write(data);
                     if (bytesWritten !== data.length) {
-                      throw new Error("Partial write");
+                      throw new Error('Partial write');
                     }
                     // Reset error count on success
                     Effect.runSync(Ref.set(writeErrorCount, 0));
                   },
                   catch: (error) => {
                     const currentErrors = Effect.runSync(
-                      Ref.updateAndGet(writeErrorCount, (n) => n + 1)
+                      Ref.updateAndGet(writeErrorCount, (n) => n + 1),
                     );
                     if (currentErrors > 3) {
                       // Too many errors, close the socket
                       Effect.runSync(performShutdown);
                       return Effect.fail(
                         new Error(
-                          `Write failed after ${currentErrors} attempts: ${error}`
-                        )
+                          `Write failed after ${currentErrors} attempts: ${error}`,
+                        ),
                       );
                     }
                     // Retry with the same data after a delay
                     return Effect.sleep(Duration.millis(100)).pipe(
-                      Effect.flatMap(() => Queue.offer(outgoingQueue, data))
+                      Effect.flatMap(() => Queue.offer(outgoingQueue, data)),
                     );
                   },
-                })
-              )
+                }),
+              ),
             ),
         }),
-        Effect.fork
+        Effect.fork,
       );
 
       // Cleanup procedure
       const close = Effect.gen(function* () {
-        console.log("Closing connection");
+        console.log('Closing connection');
         yield* performShutdown;
       });
 
@@ -129,6 +129,6 @@ export const createTcpConnection = (options: {
           Queue.offer(outgoingQueue, new TextEncoder().encode(data)),
         close,
       };
-    })
+    }),
   );
 };

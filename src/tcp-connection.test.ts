@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { test, expect, mock, afterAll } from "bun:test";
+import { test, expect, mock, afterAll } from 'bun:test';
 import {
   Effect,
   TestClock,
@@ -10,9 +10,9 @@ import {
   Queue,
   Clock,
   Deferred,
-} from "effect";
+} from 'effect';
 
-import { TcpStream, TcpConnectionError, BunError } from "./tcp-connection";
+import { TcpStream, TcpConnectionError, BunError } from './tcp-connection';
 
 // Mock Bun.Socket functionality for testing
 const createMockSocket = () => {
@@ -24,7 +24,9 @@ const createMockSocket = () => {
         writtenData.push(data);
         return data.length; // Simulate successful write
       }),
-      end: mock(() => {}),
+      end: mock(() => {
+        return void 0;
+      }),
     },
     writtenData,
     emitData: (handlers: any, data: Uint8Array) => {
@@ -58,13 +60,13 @@ afterAll(() => {
   Bun.connect = originalConnect;
 });
 
-test("TcpStream.connect should establish a connection", async () => {
+test('TcpStream.connect should establish a connection', async () => {
   const program = Effect.gen(function* () {
     const stream = yield* TcpStream.connect({
-      host: "localhost",
+      host: 'localhost',
       port: 8080,
       bufferSize: 1024,
-      connectTimeout: "1 second",
+      connectTimeout: '1 second',
     });
 
     // Test the connection was successful
@@ -75,7 +77,7 @@ test("TcpStream.connect should establish a connection", async () => {
   expect(result).toBeTrue();
 });
 
-test("TcpStream.write should send data through the socket", async () => {
+test('TcpStream.write should send data through the socket', async () => {
   const mockSocket = createMockSocket();
   let capturedHandlers: any = {};
 
@@ -84,13 +86,13 @@ test("TcpStream.write should send data through the socket", async () => {
     capturedHandlers = options.socket;
     // Return a Promise and use type assertion
     return Promise.resolve(
-      mockSocket.socket as unknown as Bun.Socket<undefined>
+      mockSocket.socket as unknown as Bun.Socket<undefined>,
     );
   });
 
   const program = Effect.gen(function* () {
     const stream = yield* TcpStream.connect({
-      host: "localhost",
+      host: 'localhost',
       port: 8080,
     });
 
@@ -109,18 +111,18 @@ test("TcpStream.write should send data through the socket", async () => {
   expect(result.writtenData[0]).toEqual(new Uint8Array([1, 2, 3, 4]));
 });
 
-test("TcpStream.writeText should properly encode and send text", async () => {
+test('TcpStream.writeText should properly encode and send text', async () => {
   const mockSocket = createMockSocket();
   Bun.connect = mock((options: any) =>
-    Promise.resolve(mockSocket.socket as unknown as Bun.Socket<undefined>)
+    Promise.resolve(mockSocket.socket as unknown as Bun.Socket<undefined>),
   );
 
   const program = Effect.gen(function* () {
     const stream = yield* TcpStream.connect({
-      host: "localhost",
+      host: 'localhost',
       port: 8080,
     });
-    const writeResult = yield* stream.writeText("Hello, world!");
+    const writeResult = yield* stream.writeText('Hello, world!');
     return writeResult;
   }).pipe(Effect.provide(TestContext.TestContext));
 
@@ -129,25 +131,25 @@ test("TcpStream.writeText should properly encode and send text", async () => {
 
   const encoder = new TextEncoder();
   expect(mockSocket.writtenData.length).toBe(1);
-  expect(mockSocket.writtenData[0]).toEqual(encoder.encode("Hello, world!"));
+  expect(mockSocket.writtenData[0]).toEqual(encoder.encode('Hello, world!'));
 });
 
 // Bun test format
-test("timeout should work correctly", async () => {
+test('timeout should work correctly', async () => {
   const program = Effect.gen(function* () {
     // Create a fiber that sleeps for 5 minutes and then times out
     // after 1 minute
-    const fiber = yield* Effect.sleep("5 minutes").pipe(
+    const fiber = yield* Effect.sleep('5 minutes').pipe(
       Effect.timeoutTo({
-        duration: "1 minute",
+        duration: '1 minute',
         onSuccess: Option.some,
         onTimeout: () => Option.none<void>(),
       }),
-      Effect.fork
+      Effect.fork,
     );
 
     // Adjust the TestClock by 1 minute to simulate the passage of time
-    yield* TestClock.adjust("1 minutes");
+    yield* TestClock.adjust('1 minutes');
 
     // Get the result of the fiber
     const result = yield* Fiber.join(fiber);
@@ -161,22 +163,22 @@ test("timeout should work correctly", async () => {
   expect(result).toBeTrue();
 });
 
-test("timeout recurring effects", async () => {
+test('timeout recurring effects', async () => {
   const test = Effect.gen(function* () {
     const q = yield* Queue.unbounded();
 
     yield* Queue.offer(q, undefined).pipe(
       // Delay the effect for 60 minutes and repeat it forever
-      Effect.delay("60 minutes"),
+      Effect.delay('60 minutes'),
       Effect.forever,
-      Effect.fork
+      Effect.fork,
     );
 
     // Check if no effect is performed before the recurrence period
     const a = yield* Queue.poll(q).pipe(Effect.andThen(Option.isNone));
 
     // Adjust the TestClock by 60 minutes to simulate the passage of time
-    yield* TestClock.adjust("60 minutes");
+    yield* TestClock.adjust('60 minutes');
 
     // Check if an effect is performed after the recurrence period
     const b = yield* Queue.take(q).pipe(Effect.as(true));
@@ -185,7 +187,7 @@ test("timeout recurring effects", async () => {
     const c = yield* Queue.poll(q).pipe(Effect.andThen(Option.isNone));
 
     // Adjust the TestClock by another 60 minutes
-    yield* TestClock.adjust("60 minutes");
+    yield* TestClock.adjust('60 minutes');
 
     // Check if another effect is performed
     const d = yield* Queue.take(q).pipe(Effect.as(true));
@@ -199,13 +201,13 @@ test("timeout recurring effects", async () => {
   expect(result).toBeTrue();
 });
 
-test("testing clock", async () => {
+test('testing clock', async () => {
   const test = Effect.gen(function* () {
     // Get the current time using the Clock
     const startTime = yield* Clock.currentTimeMillis;
 
     // Adjust the TestClock by 1 minute to simulate the passage of time
-    yield* TestClock.adjust("1 minute");
+    yield* TestClock.adjust('1 minute');
 
     // Get the current time again
     const endTime = yield* Clock.currentTimeMillis;
@@ -219,7 +221,7 @@ test("testing clock", async () => {
   expect(result).toBeTrue();
 });
 
-test("testing defered", async () => {
+test('testing defered', async () => {
   const test = Effect.gen(function* () {
     // Create a deferred value
     const deferred = yield* Deferred.make<number, void>();
@@ -227,12 +229,12 @@ test("testing defered", async () => {
     // Run two effects concurrently: sleep for 10 seconds and succeed
     // the deferred with a value of 1
     yield* Effect.all(
-      [Effect.sleep("10 seconds"), Deferred.succeed(deferred, 1)],
-      { concurrency: "unbounded" }
+      [Effect.sleep('10 seconds'), Deferred.succeed(deferred, 1)],
+      { concurrency: 'unbounded' },
     ).pipe(Effect.fork);
 
     // Adjust the TestClock by 10 seconds
-    yield* TestClock.adjust("10 seconds");
+    yield* TestClock.adjust('10 seconds');
 
     // Await the value from the deferred
     const readRef = yield* Deferred.await(deferred);

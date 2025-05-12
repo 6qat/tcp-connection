@@ -11,11 +11,11 @@ import {
   Ref,
   identity,
   Data,
-} from "effect";
-import type { TimeoutException } from "effect/Cause";
+} from 'effect';
+import type { TimeoutException } from 'effect/Cause';
 
 // Base error class with a more flexible tag system
-export class TcpConnectionError extends Data.TaggedError("TcpConnectionError") {
+export class TcpConnectionError extends Data.TaggedError('TcpConnectionError') {
   constructor(readonly errorType?: string) {
     super();
   }
@@ -24,10 +24,10 @@ export class TcpConnectionError extends Data.TaggedError("TcpConnectionError") {
 // Specific error type that extends the base error
 export class BunError extends TcpConnectionError {
   // Override the errorType to identify specific errors
-  readonly errorType = "BunError";
+  readonly errorType = 'BunError';
 
   constructor(readonly message: string) {
-    super("BunError");
+    super('BunError');
   }
 }
 
@@ -42,18 +42,18 @@ export class TcpStream {
   private constructor(
     private readonly incomingQueue: Queue.Queue<Chunk.Chunk<Uint8Array>>,
     private readonly outgoingQueue: Queue.Queue<Uint8Array>,
-    private readonly performShutdown: Effect.Effect<void>
+    private readonly performShutdown: Effect.Effect<void>,
   ) {}
 
   static connect(
-    config: TcpStreamConfig
+    config: TcpStreamConfig,
   ): Effect.Effect<TcpStream, TcpConnectionError | TimeoutException> {
     return Effect.gen(function* () {
       const incomingQueue = yield* Queue.bounded<Chunk.Chunk<Uint8Array>>(
-        config.bufferSize ?? 1024
+        config.bufferSize ?? 1024,
       );
       const outgoingQueue = yield* Queue.bounded<Uint8Array>(
-        config.bufferSize ?? 1024
+        config.bufferSize ?? 1024,
       );
 
       // Use refs for coordinated cleanup
@@ -89,7 +89,7 @@ export class TcpStream {
               },
               error(_socket, _error) {
                 Effect.runPromise(performShutdown);
-                throw new BunError("Error on Bun.connect() handler");
+                throw new BunError('Error on Bun.connect() handler');
               },
               close(_socket) {
                 Effect.runPromise(performShutdown);
@@ -100,11 +100,11 @@ export class TcpStream {
           error instanceof BunError
             ? error
             : new BunError(
-                error instanceof Error ? error.message : (error as string)
+                error instanceof Error ? error.message : (error as string),
               ),
       }).pipe(
-        Effect.timeout(Duration.toMillis(config.connectTimeout ?? "5 seconds")),
-        Effect.onInterrupt(() => performShutdown)
+        Effect.timeout(Duration.toMillis(config.connectTimeout ?? '5 seconds')),
+        Effect.onInterrupt(() => performShutdown),
       );
       const bunSocket = yield* _bunSocket;
 
@@ -121,7 +121,7 @@ export class TcpStream {
                       try: () => {
                         const bytesWritten = bunSocket.write(data);
                         if (bytesWritten !== data.length) {
-                          throw new BunError("Partial write");
+                          throw new BunError('Partial write');
                         }
                       },
                       catch: (error) =>
@@ -130,19 +130,19 @@ export class TcpStream {
                           : new BunError(
                               error instanceof Error
                                 ? error.message
-                                : (error as string)
+                                : (error as string),
                             ),
                     }).pipe(
                       Effect.retry(
-                        Schedule.exponential("100 millis").pipe(
-                          Schedule.compose(Schedule.recurs(5))
-                        )
-                      )
-                    )
-              )
+                        Schedule.exponential('100 millis').pipe(
+                          Schedule.compose(Schedule.recurs(5)),
+                        ),
+                      ),
+                    ),
+              ),
             ),
         }).pipe(Effect.map(() => undefined)),
-        Effect.fork
+        Effect.fork,
       );
       const writerFiber = yield* _writerFiber;
 
@@ -153,16 +153,16 @@ export class TcpStream {
   get incomingStream(): Stream.Stream<Uint8Array, TcpConnectionError> {
     return Stream.fromQueue(this.incomingQueue).pipe(
       Stream.mapChunks(Chunk.flatMap(identity)),
-      Stream.catchAll(() => Stream.empty)
+      Stream.catchAll(() => Stream.empty),
     );
   }
 
   write(data: Uint8Array): Effect.Effect<boolean, TcpConnectionError> {
     return Queue.offer(this.outgoingQueue, data).pipe(
       Effect.catchAll(() =>
-        Effect.fail(new Error("Connection closed") as TcpConnectionError)
+        Effect.fail(new Error('Connection closed') as TcpConnectionError),
       ),
-      Effect.tap(() => Effect.logDebug(`Sent ${data.length} bytes`))
+      Effect.tap(() => Effect.logDebug(`Sent ${data.length} bytes`)),
     );
   }
 
@@ -178,10 +178,10 @@ export class TcpStream {
   }
 
   static managedStream(
-    config: TcpStreamConfig
+    config: TcpStreamConfig,
   ): Stream.Stream<Uint8Array, TcpConnectionError | TimeoutException> {
     return Stream.acquireRelease(TcpStream.connect(config), (stream) =>
-      stream.close()
+      stream.close(),
     ).pipe(Stream.flatMap((stream) => stream.incomingStream));
   }
 }
@@ -189,19 +189,19 @@ export class TcpStream {
 // Usage examples
 const program = Effect.gen(function* () {
   const stream = yield* TcpStream.connect({
-    host: "www.terra.com.br",
+    host: 'www.terra.com.br',
     port: 80,
     bufferSize: 4096,
-    connectTimeout: "2 seconds",
+    connectTimeout: '2 seconds',
   });
 
-  yield* stream.writeText("GET / HTTP/1.1\r\nHost: www.terra.com.br\r\n\r\n");
+  yield* stream.writeText('GET / HTTP/1.1\r\nHost: www.terra.com.br\r\n\r\n');
 
   yield* pipe(
     stream.incomingStream,
     Stream.takeUntil((data) => data.includes(0x04)), // ETX
     Stream.runCollect,
-    Effect.tap((chunks) => Effect.log(`Received ${chunks.length} chunks`))
+    Effect.tap((chunks) => Effect.log(`Received ${chunks.length} chunks`)),
   );
 
   yield* stream.close();
