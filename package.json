@@ -28,6 +28,7 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
+    "@effect/platform-bun": "^0.64.0",
     "effect": "^3.15.0"
   },
   "devDependencies": {

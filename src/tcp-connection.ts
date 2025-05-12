@@ -15,6 +15,7 @@ import {
   Layer,
 } from 'effect';
 import { TimeoutException } from 'effect/Cause';
+import { BunRuntime } from '@effect/platform-bun';
 
 // Base error class with a more flexible tag system
 export class TcpConnectionError extends Data.TaggedError('TcpConnectionError') {
@@ -66,7 +67,7 @@ interface TcpStreamShape {
 
 class TcpStream extends Context.Tag('TcpStream')<TcpStream, TcpStreamShape>() {}
 
-const make = (
+const makeEffect = (
   config: TcpStreamConfig,
 ): Effect.Effect<TcpStreamShape, TcpConnectionError | TimeoutException> =>
   Effect.gen(function* () {
@@ -206,13 +207,13 @@ const program = Effect.gen(function* () {
   yield* client.close;
 }).pipe(Effect.catchAll((error) => Effect.logError(error.message)));
 
-const layer = (config: TcpStreamConfig) =>
-  Layer.scoped(TcpStream, make(config));
+const makeLayer = (config: TcpStreamConfig) =>
+  Layer.scoped(TcpStream, makeEffect(config));
 
-Effect.runPromise(
+BunRuntime.runMain(
   Effect.provide(
     program,
-    layer({
+    makeLayer({
       host: 'www.terra.com.br',
       port: 80,
       bufferSize: 4096,
@@ -220,3 +221,5 @@ Effect.runPromise(
     }),
   ),
 );
+
+export { TcpStream, makeLayer };
