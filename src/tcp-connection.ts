@@ -16,6 +16,7 @@ import {
   LogLevel,
   Logger,
   Console,
+  Scope,
 } from 'effect';
 import { TimeoutException } from 'effect/Cause';
 import { BunRuntime } from '@effect/platform-bun';
@@ -224,10 +225,20 @@ const makeEffect = (
         return !closing;
       }),
     });
-  }).pipe(Logger.withMinimumLogLevel(LogLevel.Debug));
+  }); //.pipe(Logger.withMinimumLogLevel(LogLevel.Debug));
 
 const makeLayer = (config: TcpStreamConfig) =>
-  Layer.scoped(TcpStream, makeEffect(config));
+  Layer.effect(TcpStream, makeEffect(config));
+
+const _l = Layer.extendScope(
+  makeLayer({
+    host: 'www.terra.com.br',
+    port: 80,
+    incomingBufferSize: 4096,
+    outgoingBufferSize: 4096,
+    connectTimeout: '2 seconds',
+  }),
+);
 
 // Usage examples
 const program = Effect.gen(function* () {
@@ -245,16 +256,21 @@ const program = Effect.gen(function* () {
   yield* client.close;
 }).pipe(Effect.catchAll((error) => Effect.logError(error.message)));
 
+const loggerLayer = Logger.minimumLogLevel(LogLevel.Debug);
+
 BunRuntime.runMain(
   Effect.provide(
-    program.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
-    makeLayer({
-      host: 'www.terra.com.br',
-      port: 80,
-      incomingBufferSize: 4096,
-      outgoingBufferSize: 4096,
-      connectTimeout: '2 seconds',
-    }),
+    program, //.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
+    Layer.merge(
+      loggerLayer,
+      makeLayer({
+        host: 'www.terra.com.br',
+        port: 80,
+        incomingBufferSize: 4096,
+        outgoingBufferSize: 4096,
+        connectTimeout: '2 seconds',
+      }),
+    ),
   ),
 );
 
