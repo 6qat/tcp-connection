@@ -13,6 +13,9 @@ import {
   Data,
   Context,
   Layer,
+  LogLevel,
+  Logger,
+  Console,
 } from 'effect';
 import { TimeoutException } from 'effect/Cause';
 import { BunRuntime } from '@effect/platform-bun';
@@ -50,7 +53,8 @@ export class TcpConnectionWriteError extends TcpConnectionError {
 export interface TcpStreamConfig {
   readonly host: string;
   readonly port: number;
-  readonly bufferSize?: number;
+  readonly incomingBufferSize?: number;
+  readonly outgoingBufferSize?: number;
   readonly connectTimeout?: Duration.DurationInput;
 }
 
@@ -63,6 +67,7 @@ interface TcpStreamShape {
     data: string,
   ) => Effect.Effect<boolean, TcpConnectionError>;
   readonly close: Effect.Effect<void>;
+  readonly isConnected: Effect.Effect<boolean>;
 }
 
 class TcpStream extends Context.Tag('TcpStream')<TcpStream, TcpStreamShape>() {}
@@ -72,10 +77,10 @@ const makeEffect = (
 ): Effect.Effect<TcpStreamShape, TcpConnectionError | TimeoutException> =>
   Effect.gen(function* () {
     const incomingQueue = yield* Queue.bounded<Chunk.Chunk<Uint8Array>>(
-      config.bufferSize ?? 1024,
+      config.incomingBufferSize ?? 1024,
     );
     const outgoingQueue = yield* Queue.bounded<Uint8Array>(
-      config.bufferSize ?? 1024,
+      config.outgoingBufferSize ?? 1024,
     );
 
     // Use refs for coordinated cleanup
@@ -85,6 +90,7 @@ const makeEffect = (
     const performShutdown = Effect.gen(function* () {
       const alreadyClosing = yield* Ref.getAndSet(isClosing, true);
       if (alreadyClosing) return;
+      yield* Effect.logDebug('Shutting down TCP connection');
 
       bunSocket.end();
 
@@ -98,6 +104,8 @@ const makeEffect = (
         Queue.shutdown(incomingQueue),
         Queue.shutdown(outgoingQueue),
       ]);
+
+      yield* Effect.logDebug('TCP connection shutdown complete');
     });
 
     const _bunSocket = Effect.tryPromise({
@@ -106,6 +114,14 @@ const makeEffect = (
           port: config.port,
           hostname: config.host,
           socket: {
+            open(_socket) {
+              Effect.runPromise(
+                Effect.logDebug('TCP connection established', {
+                  host: config.host,
+                  port: config.port,
+                }),
+              );
+            },
             data(_socket, data) {
               Effect.runPromise(Queue.offer(incomingQueue, Chunk.of(data)));
             },
@@ -141,6 +157,9 @@ const makeEffect = (
         while: () => true,
         body: () =>
           Queue.take(outgoingQueue).pipe(
+            Effect.tap((data) =>
+              Effect.logDebug(`Dequeuing ${data.length} bytes for writing`),
+            ),
             Effect.flatMap((data) =>
               data.length === 0
                 ? Effect.void // Backpressure signal
@@ -182,14 +201,33 @@ const makeEffect = (
       Stream.catchAll(() => Stream.empty),
     );
 
+    const write = (data: Uint8Array<ArrayBufferLike>) => {
+      if (data.length === 0) return Effect.succeed(true);
+      return Effect.gen(function* () {
+        const closed = yield* Ref.get(isClosing);
+        if (closed)
+          return yield* Effect.fail(new TcpConnectionError('ConnectionClosed'));
+
+        const success = yield* Queue.offer(outgoingQueue, data);
+        yield* Effect.logDebug(`Sent ${data.length} bytes`);
+        return success;
+      });
+    };
+
     return TcpStream.of({
       incomingStream,
-      write: (data) => Queue.offer(outgoingQueue, data),
-      writeText: (data) =>
-        Queue.offer(outgoingQueue, new TextEncoder().encode(data)),
+      write,
+      writeText: (data) => write(new TextEncoder().encode(data)),
       close: performShutdown,
+      isConnected: Effect.gen(function* () {
+        const closing = yield* Ref.get(isClosing);
+        return !closing;
+      }),
     });
-  });
+  }).pipe(Logger.withMinimumLogLevel(LogLevel.Debug));
+
+const makeLayer = (config: TcpStreamConfig) =>
+  Layer.scoped(TcpStream, makeEffect(config));
 
 // Usage examples
 const program = Effect.gen(function* () {
@@ -207,16 +245,14 @@ const program = Effect.gen(function* () {
   yield* client.close;
 }).pipe(Effect.catchAll((error) => Effect.logError(error.message)));
 
-const makeLayer = (config: TcpStreamConfig) =>
-  Layer.scoped(TcpStream, makeEffect(config));
-
 BunRuntime.runMain(
   Effect.provide(
-    program,
+    program.pipe(Logger.withMinimumLogLevel(LogLevel.Debug)),
     makeLayer({
       host: 'www.terra.com.br',
       port: 80,
-      bufferSize: 4096,
+      incomingBufferSize: 4096,
+      outgoingBufferSize: 4096,
       connectTimeout: '2 seconds',
     }),
   ),
