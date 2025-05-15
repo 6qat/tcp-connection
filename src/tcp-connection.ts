@@ -1,27 +1,28 @@
+import type { Socket } from 'node:net';
+import { NodeRuntime } from '@effect/platform-node';
 // src/tcp-stream.ts
 import {
-  Effect,
-  Deferred,
-  Stream,
-  Queue,
-  Fiber,
-  pipe,
   Chunk,
-  Duration,
-  Schedule,
-  Ref,
-  identity,
-  Data,
+  Console,
   Context,
+  Data,
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
   Layer,
   LogLevel,
   Logger,
-  Console,
-  type Scope,
   Metric,
+  Queue,
+  Ref,
+  Schedule,
+  Scope,
+  Stream,
+  identity,
+  pipe,
 } from 'effect';
-import { NodeRuntime } from '@effect/platform-node';
-import type { Socket } from 'node:net';
+import { effect } from 'effect/Layer';
 
 // Base error class with a more flexible tag system
 export class TcpConnectionError extends Data.TaggedError('TcpConnectionError') {
@@ -175,11 +176,13 @@ const program = Effect.gen(function* () {
   const send = (data: Uint8Array) =>
     pipe(
       Ref.update(bytesSentRef, (n) => n + data.length),
+      Effect.zipRight(Metric.incrementBy(bytesSent, data.length)),
       Effect.flatMap(() => client.send(data)),
     );
   const sendWithRetry = (data: Uint8Array) =>
     pipe(
       Ref.update(bytesSentRef, (n) => n + data.length),
+      Effect.zipRight(Metric.incrementBy(bytesSent, data.length)),
       Effect.flatMap(() => client.sendWithRetry(data)),
     );
 
@@ -204,8 +207,8 @@ const program = Effect.gen(function* () {
           Effect.sync(() => Buffer.from('ping')),
           (data) =>
             sendWithRetry(data).pipe(
-              Effect.orElse(() => Effect.logError('deu ruim')),
-              Effect.zipRight(printMetrics), // <-- Add this line
+              Effect.catchAll((error) => Effect.logError(error.message)),
+              // Effect.zipRight(printMetrics), // <-- Add this line
             ),
         ),
       ),
@@ -214,7 +217,18 @@ const program = Effect.gen(function* () {
     Effect.fork,
   );
 
-  yield* Effect.never;
+  // Remove NodeRuntime default listeners
+  process.removeAllListeners('SIGINT');
+  process.removeAllListeners('SIGTERM');
+
+  const shutdownSignal = Effect.async((resume) => {
+    const onExit = () => resume(Effect.void);
+    process.once('SIGINT', onExit);
+    process.once('SIGTERM', onExit);
+  });
+
+  yield* shutdownSignal;
+  yield* printMetrics;
 }).pipe(Effect.catchAll((error) => Effect.logError(error)));
 
 const LoggerLive = Logger.minimumLogLevel(LogLevel.Debug);
@@ -224,13 +238,17 @@ const TcpConfigLive = Layer.succeed(TcpConfig, {
   bufferSize: 1024,
 });
 
-const runnable = program.pipe(
-  Effect.provide(
-    TcpConnectionLive.pipe(
-      Layer.provideMerge(TcpConfigLive.pipe(Layer.provideMerge(LoggerLive))),
+const runnable = Effect.gen(function* () {
+  const scope = yield* Scope.make();
+  yield* program.pipe(
+    Effect.provideService(Scope.Scope, scope),
+    Effect.provide(
+      TcpConnectionLive.pipe(
+        Layer.provideMerge(TcpConfigLive.pipe(Layer.provideMerge(LoggerLive))),
+      ),
     ),
-  ),
-);
+  );
+});
 
 NodeRuntime.runMain(runnable);
 
