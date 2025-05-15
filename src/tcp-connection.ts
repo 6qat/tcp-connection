@@ -100,6 +100,10 @@ const TcpConnectionLive = Layer.scoped(
       yield* Effect.logInfo('Finalizer: shutting down socket...');
       const currentState = yield* Ref.get(stateRef);
       currentState?.socket.end(() => console.log('Fechando o NODE'));
+      currentState?.socket.destroy();
+      currentState?.socket.resetAndDestroy();
+      currentState?.socket.unref();
+      currentState?.socket.destroySoon();
       yield* Effect.logInfo('Finalizer: done.');
     });
 
@@ -200,11 +204,7 @@ const TcpConnectionLive = Layer.scoped(
     );
 
     return {
-      incoming: Stream.fromQueue(queue).pipe(
-        Stream.catchAll(() =>
-          Stream.fail(new TcpConnectionError('Connection closed')),
-        ),
-      ),
+      incoming: Stream.fromQueue(queue, { shutdown: true }),
       send,
       sendWithRetry,
       restart,
@@ -233,14 +233,6 @@ const program = Effect.gen(function* () {
 
   const client = yield* TcpConnection;
 
-  // Restart on close events (no polling!)
-  const queueRestartFiber = yield* pipe(
-    Stream.fromQueue(client.restartQueue),
-    Stream.tap(() => Effect.logDebug('Queue restarted')),
-    Stream.tap(() => client.restart),
-    Stream.runDrain,
-    Effect.fork,
-  );
   // yield* client.send('GET / HTTP/1.1\r\nHost: www.terra.com.br\r\n\r\n');
   const data = new TextEncoder().encode(
     'GET / HTTP/1.1\r\nHost: www.terra.com.br\r\n\r\n',
@@ -261,7 +253,7 @@ const program = Effect.gen(function* () {
 
   yield* send(data).pipe(Effect.orElse(() => Effect.logError('deu ruim')));
 
-  const _incomingFiber = yield* pipe(
+  yield* pipe(
     client.incoming,
     Stream.tap((data) => Metric.incrementBy(bytesReceived, data.length)),
     Stream.tap((data) => Ref.update(bytesReceivedRef, (n) => n + data.length)),
@@ -296,32 +288,29 @@ const program = Effect.gen(function* () {
     ),
     Effect.fork,
   );
-  const pingFiber = yield* _ping;
+  yield* _ping;
 
   // Cleanup on exit
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
-      yield* Effect.logDebug('Program Finalizer');
       yield* Queue.shutdown(client.restartQueue);
+      yield* Effect.logDebug('Program Finalizer');
+      yield* Effect.logDebug('Before printing stats');
+      yield* printMetrics;
     }),
   );
 
-  const shutdownSignal = Effect.async((resume) => {
-    const onExit = () => resume(Effect.void);
-    // Remove NodeRuntime default listeners
-    process.removeAllListeners('SIGINT');
-    process.removeAllListeners('SIGTERM');
-    process.once('SIGINT', onExit);
-    process.once('SIGTERM', onExit);
-  });
-
-  yield* shutdownSignal;
-  yield* Effect.logDebug('Before interrupting fibers');
-  yield* Fiber.interrupt(pingFiber);
-  yield* Fiber.interrupt(_incomingFiber);
-  yield* Fiber.interrupt(queueRestartFiber);
-  yield* Effect.logDebug('Before printing stats');
-  yield* printMetrics;
+  // Restart on close events (no polling!)
+  yield* pipe(
+    Stream.fromQueue(client.restartQueue, { shutdown: true }),
+    Stream.tap(() => Effect.logDebug('Queue restarted')),
+    Stream.tap(() => client.restart),
+    Stream.runDrain,
+    Effect.onInterrupt(() =>
+      Effect.logDebug('Queue restart fiber interrupted'),
+    ),
+    // Effect.fork,
+  );
 }).pipe(Effect.catchAll((error) => Effect.logError(error)));
 
 const LoggerLive = Logger.minimumLogLevel(LogLevel.Debug);
@@ -344,9 +333,10 @@ const runnable = Effect.gen(function* () {
     ),
   );
 
-  yield* Effect.logDebug('Before program END');
+  yield* Effect.logDebug('Just Before program END');
 });
 
 NodeRuntime.runMain(runnable);
+// Effect.runPromise(runnable);
 
 export { TcpConnection, TcpConnectionLive };
