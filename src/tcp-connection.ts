@@ -5,6 +5,7 @@ import {
   Context,
   Data,
   Effect,
+  Fiber,
   Layer,
   LogLevel,
   Logger,
@@ -16,6 +17,7 @@ import {
   Stream,
   pipe,
 } from 'effect';
+import { Console } from 'node:console';
 
 // Base error class with a more flexible tag system
 export class TcpConnectionError extends Data.TaggedError('TcpConnectionError') {
@@ -85,11 +87,21 @@ const TcpConnectionLive = Layer.scoped(
       Effect.runPromise(
         Effect.gen(function* () {
           yield* Ref.set(stateRef, null);
-          yield* Queue.shutdown(queue);
           yield* Queue.offer(restartQueue, void 0); // Signal restart
-          yield* Effect.logWarning('Connection closed abruptly');
+          yield* Effect.log('Connection closed abruptly!!!');
         }),
       );
+
+    const handleShutdown = Effect.gen(function* () {
+      handleClose();
+      yield* Effect.logInfo('Finalizer: shutting down queues...');
+      yield* Queue.shutdown(queue);
+      yield* Queue.shutdown(restartQueue);
+      yield* Effect.logInfo('Finalizer: shutting down socket...');
+      const currentState = yield* Ref.get(stateRef);
+      currentState?.socket.end(() => console.log('Fechando o NODE'));
+      yield* Effect.logInfo('Finalizer: done.');
+    });
 
     const createSocket: () => Effect.Effect<
       ConnectionState,
@@ -99,9 +111,21 @@ const TcpConnectionLive = Layer.scoped(
       const effect: Effect.Effect<ConnectionState, TcpConnectionError, never> =
         Effect.async((resume) => {
           const socket = net.createConnection({ host, port });
-          socket.on('connect', () =>
-            resume(Effect.succeed({ socket, isOpen: true })),
-          );
+          socket.on('connect', () => {
+            // Handle incoming data
+            socket.on('data', (chunk: Buffer) => {
+              Effect.runPromise(Queue.offer(queue, new Uint8Array(chunk)));
+            });
+            socket.on('error', (err) => {
+              Effect.runPromise(
+                Effect.fail(new TcpConnectionError(err.message)),
+              );
+            });
+            socket.on('close', () => {
+              handleClose();
+            });
+            resume(Effect.succeed({ socket, isOpen: true }));
+          });
           socket.on('error', (err) =>
             resume(Effect.fail(new TcpConnectionError(err.message))),
           );
@@ -124,21 +148,6 @@ const TcpConnectionLive = Layer.scoped(
     const initialState = yield* createSocket();
 
     yield* Ref.set(stateRef, initialState);
-
-    // Handle incoming data
-    initialState.socket.on('data', (chunk: Buffer) => {
-      Effect.runPromise(Queue.offer(queue, new Uint8Array(chunk)));
-    });
-
-    // Add error handling to socket setup
-    initialState.socket.on('error', (err) => {
-      Effect.runPromise(Effect.fail(new TcpConnectionError(err.message)));
-    });
-
-    // Handle abrupt closure
-    initialState.socket.on('close', () => {
-      handleClose();
-    });
 
     // Restart logic
     const restart: Effect.Effect<void, TcpConnectionError, never> = Effect.gen(
@@ -186,8 +195,7 @@ const TcpConnectionLive = Layer.scoped(
     // Cleanup on exit
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        yield* Effect.sync(() => initialState.socket.end());
-        yield* Queue.shutdown(queue);
+        yield* handleShutdown;
       }),
     );
 
@@ -226,8 +234,9 @@ const program = Effect.gen(function* () {
   const client = yield* TcpConnection;
 
   // Restart on close events (no polling!)
-  yield* pipe(
+  const queueRestartFiber = yield* pipe(
     Stream.fromQueue(client.restartQueue),
+    Stream.tap(() => Effect.logDebug('Queue restarted')),
     Stream.tap(() => client.restart),
     Stream.runDrain,
     Effect.fork,
@@ -252,7 +261,7 @@ const program = Effect.gen(function* () {
 
   yield* send(data).pipe(Effect.orElse(() => Effect.logError('deu ruim')));
 
-  yield* pipe(
+  const _incomingFiber = yield* pipe(
     client.incoming,
     Stream.tap((data) => Metric.incrementBy(bytesReceived, data.length)),
     Stream.tap((data) => Ref.update(bytesReceivedRef, (n) => n + data.length)),
@@ -266,12 +275,12 @@ const program = Effect.gen(function* () {
       return Effect.fail(error);
     }),
     Stream.runDrain,
-    Effect.forever,
+    // Effect.forever,
     Effect.fork, // Run in background
   );
 
   // Send "ping" every second
-  yield* pipe(
+  const _ping = pipe(
     Effect.repeat(
       pipe(
         Effect.flatMap(
@@ -283,9 +292,18 @@ const program = Effect.gen(function* () {
             ),
         ),
       ),
-      Schedule.spaced('3 seconds'),
+      Schedule.spaced('2 seconds'),
     ),
     Effect.fork,
+  );
+  const pingFiber = yield* _ping;
+
+  // Cleanup on exit
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function* () {
+      yield* Effect.logDebug('Program Finalizer');
+      yield* Queue.shutdown(client.restartQueue);
+    }),
   );
 
   const shutdownSignal = Effect.async((resume) => {
@@ -298,6 +316,11 @@ const program = Effect.gen(function* () {
   });
 
   yield* shutdownSignal;
+  yield* Effect.logDebug('Before interrupting fibers');
+  yield* Fiber.interrupt(pingFiber);
+  yield* Fiber.interrupt(_incomingFiber);
+  yield* Fiber.interrupt(queueRestartFiber);
+  yield* Effect.logDebug('Before printing stats');
   yield* printMetrics;
 }).pipe(Effect.catchAll((error) => Effect.logError(error)));
 
@@ -309,15 +332,19 @@ const TcpConfigLive = Layer.succeed(TcpConfig, {
 });
 
 const runnable = Effect.gen(function* () {
-  const scope = yield* Scope.make();
-  yield* program.pipe(
-    Effect.provideService(Scope.Scope, scope),
-    Effect.provide(
-      TcpConnectionLive.pipe(
-        Layer.provideMerge(TcpConfigLive.pipe(Layer.provideMerge(LoggerLive))),
+  yield* Effect.scoped(
+    program.pipe(
+      Effect.provide(
+        TcpConnectionLive.pipe(
+          Layer.provideMerge(
+            TcpConfigLive.pipe(Layer.provideMerge(LoggerLive)),
+          ),
+        ),
       ),
     ),
   );
+
+  yield* Effect.logDebug('Before program END');
 });
 
 NodeRuntime.runMain(runnable);
