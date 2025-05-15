@@ -2,14 +2,9 @@ import type { Socket } from 'node:net';
 import { NodeRuntime } from '@effect/platform-node';
 // src/tcp-stream.ts
 import {
-  Chunk,
-  Console,
   Context,
   Data,
-  Deferred,
-  Duration,
   Effect,
-  Fiber,
   Layer,
   LogLevel,
   Logger,
@@ -19,10 +14,8 @@ import {
   Schedule,
   Scope,
   Stream,
-  identity,
   pipe,
 } from 'effect';
-import { effect } from 'effect/Layer';
 
 // Base error class with a more flexible tag system
 export class TcpConnectionError extends Data.TaggedError('TcpConnectionError') {
@@ -56,11 +49,13 @@ class TcpConnection extends Context.Tag('TcpConnection')<
 >() {}
 
 interface TcpConnectionShape {
-  readonly incoming: Stream.Stream<Uint8Array>;
+  readonly incoming: Stream.Stream<Uint8Array, TcpConnectionError>;
   readonly send: (data: Uint8Array) => Effect.Effect<void, TcpConnectionError>;
   readonly sendWithRetry: (
     data: Uint8Array,
   ) => Effect.Effect<void, TcpConnectionError>;
+  readonly restart: Effect.Effect<void, TcpConnectionError>;
+  readonly restartQueue: Queue.Queue<void>;
 }
 
 // Configuration (host/port)
@@ -69,56 +64,112 @@ class TcpConfig extends Context.Tag('TcpConfig')<
   { host: string; port: number; bufferSize?: number }
 >() {}
 
-// tcp.ts (continued)
+// State
+interface ConnectionState {
+  readonly socket: Socket; // Or TLS socket
+  readonly isOpen: boolean;
+}
+
 const TcpConnectionLive = Layer.scoped(
   TcpConnection,
   Effect.gen(function* () {
     const { host, port, bufferSize = 2048 } = yield* TcpConfig;
     const queue = yield* Queue.bounded<Uint8Array>(bufferSize);
+    const stateRef = yield* Ref.make<ConnectionState | null>(null);
+    const restartQueue = yield* Queue.unbounded<void>(); // Signal restarts
+
     const net = yield* Effect.promise(() => import('node:net'));
 
-    // Reconnect on failure
-    const createSocket: Effect.Effect<Socket, TcpConnectionError, never> =
-      Effect.async((resume) => {
-        const socket = net.createConnection({ host, port });
-        socket.on('connect', () => resume(Effect.succeed(socket)));
-        socket.on('error', (err) =>
-          resume(Effect.fail(new TcpConnectionError(err.message))),
-        );
-      });
+    // When the socket closes, notify the restart queue
+    const handleClose = () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          yield* Ref.set(stateRef, null);
+          yield* Queue.shutdown(queue);
+          yield* Queue.offer(restartQueue, void 0); // Signal restart
+          yield* Effect.logWarning('Connection closed abruptly');
+        }),
+      );
+
+    const createSocket: () => Effect.Effect<
+      ConnectionState,
+      TcpConnectionError,
+      never
+    > = () => {
+      const effect: Effect.Effect<ConnectionState, TcpConnectionError, never> =
+        Effect.async((resume) => {
+          const socket = net.createConnection({ host, port });
+          socket.on('connect', () =>
+            resume(Effect.succeed({ socket, isOpen: true })),
+          );
+          socket.on('error', (err) =>
+            resume(Effect.fail(new TcpConnectionError(err.message))),
+          );
+        });
+      return effect.pipe(
+        Effect.retry(
+          Schedule.exponential('1 second').pipe(
+            Schedule.compose(Schedule.recurUpTo(5)),
+          ),
+        ),
+        Effect.tap(() => Effect.logInfo('Connection established')),
+
+        Effect.tapErrorCause((cause) =>
+          Effect.logError('Connection failed', cause),
+        ),
+      );
+    };
 
     // Create TCP socket
-    const socket = yield* createSocket.pipe(
-      Effect.retry(
-        Schedule.exponential('1 second').pipe(
-          Schedule.compose(Schedule.recurUpTo(5)),
-        ),
-      ),
-    );
+    const initialState = yield* createSocket();
+
+    yield* Ref.set(stateRef, initialState);
 
     // Handle incoming data
-    socket.on('data', (chunk: Buffer) => {
+    initialState.socket.on('data', (chunk: Buffer) => {
       Effect.runPromise(Queue.offer(queue, new Uint8Array(chunk)));
     });
 
-    socket.on('close', () => {
-      Effect.runPromise(Effect.logDebug('Socket closed'));
-    });
-
     // Add error handling to socket setup
-    socket.on('error', (err) => {
+    initialState.socket.on('error', (err) => {
       Effect.runPromise(Effect.fail(new TcpConnectionError(err.message)));
     });
 
+    // Handle abrupt closure
+    initialState.socket.on('close', () => {
+      handleClose();
+    });
+
+    // Restart logic
+    const restart: Effect.Effect<void, TcpConnectionError, never> = Effect.gen(
+      function* () {
+        yield* Effect.logInfo('Restarting connection');
+        const currentState = yield* Ref.get(stateRef);
+        if (currentState?.isOpen) return; // Already connected
+        yield* createSocket().pipe(
+          Effect.flatMap((state) => Ref.set(stateRef, state)),
+          Effect.retry(Schedule.fibonacci('5 seconds')),
+        );
+      },
+    );
+
     const send = (data: Uint8Array) =>
-      Effect.tryPromise({
-        try: () =>
-          new Promise((resolve, reject) => {
-            socket.write(data, (err) => (err ? reject(err) : resolve(void 0)));
-          }),
-        catch: (error) => {
-          return new TcpConnectionWriteError(`Send failed: ${error}`);
-        },
+      Effect.gen(function* () {
+        const state = yield* Ref.get(stateRef);
+        if (!state?.isOpen) {
+          return yield* Effect.fail(new TcpConnectionCloseError('not_open'));
+        }
+        return yield* Effect.tryPromise({
+          try: () =>
+            new Promise((resolve, reject) => {
+              state.socket.write(data, (err) =>
+                err
+                  ? reject(new TcpConnectionWriteError(err.message))
+                  : resolve(void 0),
+              );
+            }),
+          catch: (error) => new TcpConnectionWriteError(error as string),
+        });
       });
 
     // Retry logic for send
@@ -135,15 +186,21 @@ const TcpConnectionLive = Layer.scoped(
     // Cleanup on exit
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        yield* Effect.sync(() => socket.end());
+        yield* Effect.sync(() => initialState.socket.end());
         yield* Queue.shutdown(queue);
       }),
     );
 
     return {
-      incoming: Stream.fromQueue(queue),
+      incoming: Stream.fromQueue(queue).pipe(
+        Stream.catchAll(() =>
+          Stream.fail(new TcpConnectionError('Connection closed')),
+        ),
+      ),
       send,
       sendWithRetry,
+      restart,
+      restartQueue,
     };
   }),
 );
@@ -168,6 +225,13 @@ const program = Effect.gen(function* () {
 
   const client = yield* TcpConnection;
 
+  // Restart on close events (no polling!)
+  yield* pipe(
+    Stream.fromQueue(client.restartQueue),
+    Stream.tap(() => client.restart),
+    Stream.runDrain,
+    Effect.fork,
+  );
   // yield* client.send('GET / HTTP/1.1\r\nHost: www.terra.com.br\r\n\r\n');
   const data = new TextEncoder().encode(
     'GET / HTTP/1.1\r\nHost: www.terra.com.br\r\n\r\n',
@@ -195,7 +259,14 @@ const program = Effect.gen(function* () {
     // Stream.tap((data) => Effect.logDebug(new TextDecoder().decode(data))),
     Stream.tap((data) => Effect.logDebug(`Received: ${Buffer.from(data)}`)),
     Stream.tap((chunks) => Effect.logDebug(`Received ${chunks.length} chunks`)),
+    Stream.catchAll((error) => {
+      if (error instanceof TcpConnectionCloseError) {
+        return Effect.log('Connection closed. Restarting...');
+      }
+      return Effect.fail(error);
+    }),
     Stream.runDrain,
+    Effect.forever,
     Effect.fork, // Run in background
   );
 
@@ -212,17 +283,16 @@ const program = Effect.gen(function* () {
             ),
         ),
       ),
-      Schedule.spaced('1 seconds'),
+      Schedule.spaced('3 seconds'),
     ),
     Effect.fork,
   );
 
-  // Remove NodeRuntime default listeners
-  process.removeAllListeners('SIGINT');
-  process.removeAllListeners('SIGTERM');
-
   const shutdownSignal = Effect.async((resume) => {
     const onExit = () => resume(Effect.void);
+    // Remove NodeRuntime default listeners
+    process.removeAllListeners('SIGINT');
+    process.removeAllListeners('SIGTERM');
     process.once('SIGINT', onExit);
     process.once('SIGTERM', onExit);
   });
