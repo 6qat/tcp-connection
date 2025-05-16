@@ -12,12 +12,12 @@ import {
   Metric,
   Queue,
   Ref,
+  Runtime,
   Schedule,
   Scope,
   Stream,
   pipe,
 } from 'effect';
-import { Console } from 'node:console';
 
 // Base error class with a more flexible tag system
 export class TcpConnectionError extends Data.TaggedError('TcpConnectionError') {
@@ -80,20 +80,20 @@ const TcpConnectionLive = Layer.scoped(
     const stateRef = yield* Ref.make<ConnectionState | null>(null);
     const restartQueue = yield* Queue.unbounded<void>(); // Signal restarts
 
+    const LoggerLive = Logger.minimumLogLevel(LogLevel.Debug);
+    const myRuntime = yield* Effect.scoped(Layer.toRuntime(LoggerLive));
+
     const net = yield* Effect.promise(() => import('node:net'));
 
     // When the socket closes, notify the restart queue
-    const handleClose = () =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          yield* Ref.set(stateRef, null);
-          yield* Queue.offer(restartQueue, void 0); // Signal restart
-          yield* Effect.log('Connection closed abruptly!!!');
-        }),
-      );
+    const handleClose = Effect.gen(function* () {
+      yield* Ref.set(stateRef, null);
+      yield* Queue.offer(restartQueue, void 0); // Signal restart
+      yield* Effect.logDebug('Connection closed abruptly!!!');
+    });
 
     const handleShutdown = Effect.gen(function* () {
-      handleClose();
+      yield* handleClose;
       yield* Effect.logInfo('Finalizer: shutting down queues...');
       yield* Queue.shutdown(queue);
       yield* Queue.shutdown(restartQueue);
@@ -126,7 +126,7 @@ const TcpConnectionLive = Layer.scoped(
               );
             });
             socket.on('close', () => {
-              handleClose();
+              Runtime.runPromise(myRuntime)(handleClose);
             });
             resume(Effect.succeed({ socket, isOpen: true }));
           });
@@ -321,15 +321,28 @@ const TcpConfigLive = Layer.succeed(TcpConfig, {
 });
 
 const runnable = Effect.gen(function* () {
+  // yield* Effect.scoped(
+  //   program.pipe(
+  //     Effect.provide(
+  //       TcpConnectionLive.pipe(
+  //         Layer.provideMerge(
+  //           TcpConfigLive.pipe(Layer.provideMerge(LoggerLive)),
+  //         ),
+  //       ),
+  //     ),
+  //   ),
+  // );
+
   yield* Effect.scoped(
-    program.pipe(
+    Effect.provide(
       Effect.provide(
-        TcpConnectionLive.pipe(
-          Layer.provideMerge(
-            TcpConfigLive.pipe(Layer.provideMerge(LoggerLive)),
-          ),
+        Effect.provide(
+          program,
+          TcpConnectionLive.pipe(Layer.provide(LoggerLive)),
         ),
+        TcpConfigLive.pipe(Layer.provide(LoggerLive)),
       ),
+      LoggerLive,
     ),
   );
 
@@ -337,6 +350,5 @@ const runnable = Effect.gen(function* () {
 });
 
 NodeRuntime.runMain(runnable);
-// Effect.runPromise(runnable);
 
 export { TcpConnection, TcpConnectionLive };
