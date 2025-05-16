@@ -1,11 +1,10 @@
-import type { Socket } from 'node:net';
 import { NodeRuntime } from '@effect/platform-node';
+import type { Socket } from 'node:net';
 // src/tcp-stream.ts
 import {
   Context,
   Data,
   Effect,
-  Fiber,
   Layer,
   LogLevel,
   Logger,
@@ -14,7 +13,6 @@ import {
   Ref,
   Runtime,
   Schedule,
-  Scope,
   Stream,
   pipe,
 } from 'effect';
@@ -86,6 +84,7 @@ const TcpConnectionLive = Layer.scoped(
       bufferSize = 2048,
       runtimeEffect = Effect.succeed(Runtime.defaultRuntime),
     } = yield* TcpConfig;
+
     const queue = yield* Queue.bounded<Uint8Array>(bufferSize);
     const stateRef = yield* Ref.make<ConnectionState | null>(null);
     const restartQueue = yield* Queue.unbounded<void>(); // Signal restarts
@@ -96,8 +95,21 @@ const TcpConnectionLive = Layer.scoped(
 
     const net = yield* Effect.promise(() => import('node:net'));
 
+    /**
+     * The close event triggers runPromise(handleClose), which sets stateRef to null and signals a restart. If a new connection is established before the previous one is fully cleaned up, you could have overlapping sockets or fibers.
+     */
+    // TODO: Improvement: Ensure that any socket cleanup is fully completed before a new socket is created. Consider using a mutex or a dedicated "connection management" fiber to serialize open/close/restart operations.
     // When the socket closes, notify the restart queue
     const handleClose = Effect.gen(function* () {
+      const currentState = yield* Ref.get(stateRef);
+      const socket = currentState?.socket;
+      if (socket && !socket.closed) {
+        // TODO: Check if its necessary to check if the socket is closed before end()
+        socket.removeAllListeners().end();
+        if (!socket.destroyed) {
+          socket.destroy();
+        }
+      }
       yield* Ref.set(stateRef, null);
       yield* Queue.offer(restartQueue, void 0); // Signal restart
       yield* Effect.logDebug('Connection closed abruptly!!!');
@@ -105,17 +117,19 @@ const TcpConnectionLive = Layer.scoped(
 
     const handleShutdown = Effect.gen(function* () {
       yield* handleClose;
-      yield* Effect.logInfo('Finalizer: shutting down queues...');
+      yield* Effect.logDebug('Finalizer: shutting down queues...');
       yield* Queue.shutdown(queue);
       yield* Queue.shutdown(restartQueue);
-      yield* Effect.logInfo('Finalizer: shutting down socket...');
+      yield* Effect.logDebug('Finalizer: shutting down socket...');
       const currentState = yield* Ref.get(stateRef);
-      currentState?.socket.end(() => console.log('Fechando o NODE'));
-      currentState?.socket.destroy();
-      currentState?.socket.resetAndDestroy();
-      currentState?.socket.unref();
-      currentState?.socket.destroySoon();
-      yield* Effect.logInfo('Finalizer: done.');
+      const socket = currentState?.socket;
+      if (socket && !socket.closed) {
+        socket.removeAllListeners().end();
+        if (!socket.destroyed) {
+          socket.destroy();
+        }
+      }
+      yield* Effect.logDebug('Finalizer: done.');
     });
 
     const createSocket: () => Effect.Effect<
@@ -129,12 +143,10 @@ const TcpConnectionLive = Layer.scoped(
           socket.on('connect', () => {
             // Handle incoming data
             socket.on('data', (chunk: Buffer) => {
-              Effect.runPromise(Queue.offer(queue, new Uint8Array(chunk)));
+              runPromise(Queue.offer(queue, new Uint8Array(chunk)));
             });
             socket.on('error', (err) => {
-              Effect.runPromise(
-                Effect.fail(new TcpConnectionError(err.message)),
-              );
+              runPromise(Effect.fail(new TcpConnectionError(err.message)));
             });
             socket.on('close', () => {
               runPromise(handleClose);
@@ -151,7 +163,7 @@ const TcpConnectionLive = Layer.scoped(
             Schedule.compose(Schedule.recurUpTo(5)),
           ),
         ),
-        Effect.tap(() => Effect.logInfo('Connection established')),
+        Effect.tap(() => Effect.logDebug('Connection established')),
 
         Effect.tapErrorCause((cause) =>
           Effect.logError('Connection failed', cause),
@@ -165,9 +177,13 @@ const TcpConnectionLive = Layer.scoped(
     yield* Ref.set(stateRef, initialState);
 
     // Restart logic
+    /**
+     * If multiple errors or closes happen in quick succession, you may queue multiple restarts.
+     */
+    // TODO: Debounce the restart calls
     const restart: Effect.Effect<void, TcpConnectionError, never> = Effect.gen(
       function* () {
-        yield* Effect.logInfo('Restarting connection');
+        yield* Effect.logDebug('Restarting connection');
         const currentState = yield* Ref.get(stateRef);
         if (currentState?.isOpen) return; // Already connected
         yield* createSocket().pipe(
@@ -176,6 +192,14 @@ const TcpConnectionLive = Layer.scoped(
         );
       },
     );
+
+    // Add a mutex for state management
+    const stateMutex = yield* Effect.makeSemaphore(1);
+    // Wrap state updates
+    const withState = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      stateMutex.withPermits(1)(effect).pipe(Effect.withLogSpan('elapsed'));
+
+    const safeRestart = withState(restart);
 
     const send = (data: Uint8Array) =>
       Effect.gen(function* () {
@@ -218,7 +242,7 @@ const TcpConnectionLive = Layer.scoped(
       incoming: Stream.fromQueue(queue, { shutdown: true }),
       send,
       sendWithRetry,
-      restart,
+      restart: safeRestart,
       restartQueue,
     };
   }),
@@ -265,6 +289,7 @@ const program = Effect.gen(function* () {
 
   yield* send(data).pipe(Effect.orElse(() => Effect.logError('deu ruim')));
 
+  // Incoming data handling
   yield* pipe(
     client.incoming,
     Stream.tap((data) => Metric.incrementBy(bytesReceived, data.length)),
@@ -283,6 +308,11 @@ const program = Effect.gen(function* () {
     Effect.fork, // Run in background
   );
 
+  /**
+   * If a forked fiber fails (e.g., the ping fiber), is the error logged and the fiber restarted if needed?
+   */
+  // TODO: Improvement: Use Effect.forkScoped or add .pipe(Effect.catchAll(...)) to all long-lived fibers to ensure errors are logged and do not silently kill fibers.
+  // TODO: Always Handle Errors in Background Fibers. Wrap all long-running background effects with .pipe(Effect.catchAll(Effect.logError)) so errors never kill a fiber silently.
   // Send "ping" every second
   const _ping = pipe(
     Effect.repeat(
@@ -344,4 +374,4 @@ const runnable = Effect.gen(function* () {
 
 NodeRuntime.runMain(runnable);
 
-export { TcpConnection, TcpConnectionLive };
+export { TcpConfig, TcpConnection, TcpConnectionLive };
