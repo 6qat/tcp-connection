@@ -63,7 +63,12 @@ interface TcpConnectionShape {
 // Configuration (host/port)
 class TcpConfig extends Context.Tag('TcpConfig')<
   TcpConfig,
-  { host: string; port: number; bufferSize?: number }
+  {
+    host: string;
+    port: number;
+    bufferSize?: number;
+    runtimeEffect?: Effect.Effect<Runtime.Runtime<never>, never, never>;
+  }
 >() {}
 
 // State
@@ -75,13 +80,18 @@ interface ConnectionState {
 const TcpConnectionLive = Layer.scoped(
   TcpConnection,
   Effect.gen(function* () {
-    const { host, port, bufferSize = 2048 } = yield* TcpConfig;
+    const {
+      host,
+      port,
+      bufferSize = 2048,
+      runtimeEffect = Effect.succeed(Runtime.defaultRuntime),
+    } = yield* TcpConfig;
     const queue = yield* Queue.bounded<Uint8Array>(bufferSize);
     const stateRef = yield* Ref.make<ConnectionState | null>(null);
     const restartQueue = yield* Queue.unbounded<void>(); // Signal restarts
 
-    const LoggerLive = Logger.minimumLogLevel(LogLevel.Debug);
-    const myRuntime = yield* Effect.scoped(Layer.toRuntime(LoggerLive));
+    // const myRuntime = yield* Effect.scoped(Layer.toRuntime(LoggerLive));
+    const runtime = yield* runtimeEffect;
 
     const net = yield* Effect.promise(() => import('node:net'));
 
@@ -126,7 +136,7 @@ const TcpConnectionLive = Layer.scoped(
               );
             });
             socket.on('close', () => {
-              Runtime.runPromise(myRuntime)(handleClose);
+              Runtime.runPromise(runtime)(handleClose);
             });
             resume(Effect.succeed({ socket, isOpen: true }));
           });
@@ -318,35 +328,16 @@ const TcpConfigLive = Layer.succeed(TcpConfig, {
   host: 'www.terra.com.br',
   port: 80,
   bufferSize: 1024,
+  runtimeEffect: Effect.scoped(Layer.toRuntime(LoggerLive)),
 });
 
 const runnable = Effect.gen(function* () {
-  // yield* Effect.scoped(
-  //   program.pipe(
-  //     Effect.provide(
-  //       TcpConnectionLive.pipe(
-  //         Layer.provideMerge(
-  //           TcpConfigLive.pipe(Layer.provideMerge(LoggerLive)),
-  //         ),
-  //       ),
-  //     ),
-  //   ),
-  // );
-
   yield* Effect.scoped(
     Effect.provide(
-      Effect.provide(
-        Effect.provide(
-          program,
-          TcpConnectionLive.pipe(Layer.provide(LoggerLive)),
-        ),
-        TcpConfigLive.pipe(Layer.provide(LoggerLive)),
-      ),
+      Effect.provide(Effect.provide(program, TcpConnectionLive), TcpConfigLive),
       LoggerLive,
     ),
   );
-
-  yield* Effect.logDebug('Just Before program END');
 });
 
 NodeRuntime.runMain(runnable);
