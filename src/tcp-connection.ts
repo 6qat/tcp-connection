@@ -90,8 +90,9 @@ const TcpConnectionLive = Layer.scoped(
     const stateRef = yield* Ref.make<ConnectionState | null>(null);
     const restartQueue = yield* Queue.unbounded<void>(); // Signal restarts
 
-    // const myRuntime = yield* Effect.scoped(Layer.toRuntime(LoggerLive));
     const runtime = yield* runtimeEffect;
+    const runPromise = <A, E>(effect: Effect.Effect<A, E, never>) =>
+      Runtime.runPromise(runtime)(effect);
 
     const net = yield* Effect.promise(() => import('node:net'));
 
@@ -136,7 +137,7 @@ const TcpConnectionLive = Layer.scoped(
               );
             });
             socket.on('close', () => {
-              Runtime.runPromise(runtime)(handleClose);
+              runPromise(handleClose);
             });
             resume(Effect.succeed({ socket, isOpen: true }));
           });
@@ -254,6 +255,7 @@ const program = Effect.gen(function* () {
       Effect.zipRight(Metric.incrementBy(bytesSent, data.length)),
       Effect.flatMap(() => client.send(data)),
     );
+
   const sendWithRetry = (data: Uint8Array) =>
     pipe(
       Ref.update(bytesSentRef, (n) => n + data.length),
