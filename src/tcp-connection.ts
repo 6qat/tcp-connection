@@ -201,6 +201,13 @@ const TcpConnectionLive = Layer.scoped(
 
     const safeRestart = withState(restart);
 
+    const debouncedRestart = pipe(
+      safeRestart,
+      Effect.delay('3 seconds'),
+      // Effect.raceFirst(Effect.never), // Cancels previous restart if new one comes in
+      Effect.uninterruptible,
+    );
+
     const send = (data: Uint8Array) =>
       Effect.gen(function* () {
         const state = yield* Ref.get(stateRef);
@@ -242,7 +249,7 @@ const TcpConnectionLive = Layer.scoped(
       incoming: Stream.fromQueue(queue, { shutdown: true }),
       send,
       sendWithRetry,
-      restart: safeRestart,
+      restart: debouncedRestart,
       restartQueue,
     };
   }),
