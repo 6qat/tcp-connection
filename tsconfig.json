@@ -8,8 +8,18 @@
     "outDir": "./dist",
     "strict": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service"
+      }
+    ]
   },
-  "include": ["src/**/*", "../lab-effect/src/log-level.ts"],
+  "include": [
+    "../m-cedro/src/tcp-stream.ts",
+    "src/**/*",
+    "../lab-effect/src/log-level.ts",
+    "../m-cedro/src/tcp-connection.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

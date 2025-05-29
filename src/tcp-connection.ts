@@ -54,10 +54,7 @@ interface TcpConnectionShape {
   readonly sendWithRetry: (
     data: Uint8Array,
   ) => Effect.Effect<void, TcpConnectionError>;
-  readonly restart: Effect.Effect<void, TcpConnectionError>;
-  readonly restartQueue: Queue.Queue<void>;
 }
-
 // Configuration (host/port)
 class TcpConfig extends Context.Tag('TcpConfig')<
   TcpConfig,
@@ -208,6 +205,17 @@ const TcpConnectionLive = Layer.scoped(
       Effect.uninterruptible,
     );
 
+    yield* pipe(
+      Stream.fromQueue(restartQueue, { shutdown: true }),
+      Stream.tap(() => Effect.logDebug('Queue restarted')),
+      Stream.tap(() => debouncedRestart),
+      Stream.runDrain,
+      Effect.onInterrupt(() =>
+        Effect.logDebug('Queue restart fiber interrupted'),
+      ),
+      Effect.forkDaemon,
+    );
+
     const send = (data: Uint8Array) =>
       Effect.gen(function* () {
         const state = yield* Ref.get(stateRef);
@@ -249,8 +257,6 @@ const TcpConnectionLive = Layer.scoped(
       incoming: Stream.fromQueue(queue, { shutdown: true }),
       send,
       sendWithRetry,
-      restart: debouncedRestart,
-      restartQueue,
     };
   }),
 );
@@ -287,13 +293,14 @@ const program = Effect.gen(function* () {
       Effect.flatMap(() => client.send(data)),
     );
 
-  const sendWithRetry = (data: Uint8Array) =>
+  const _sendWithRetry = (data: Uint8Array) =>
     pipe(
       Ref.update(bytesSentRef, (n) => n + data.length),
       Effect.zipRight(Metric.incrementBy(bytesSent, data.length)),
       Effect.flatMap(() => client.sendWithRetry(data)),
     );
 
+  // Initial send
   yield* send(data).pipe(Effect.orElse(() => Effect.logError('deu ruim')));
 
   // Incoming data handling
@@ -320,46 +327,17 @@ const program = Effect.gen(function* () {
    */
   // TODO: Improvement: Use Effect.forkScoped or add .pipe(Effect.catchAll(...)) to all long-lived fibers to ensure errors are logged and do not silently kill fibers.
   // TODO: Always Handle Errors in Background Fibers. Wrap all long-running background effects with .pipe(Effect.catchAll(Effect.logError)) so errors never kill a fiber silently.
-  // Send "ping" every second
-  const _ping = pipe(
-    Effect.repeat(
-      pipe(
-        Effect.flatMap(
-          Effect.sync(() => Buffer.from('ping')),
-          (data) =>
-            sendWithRetry(data).pipe(
-              Effect.catchAll((error) => Effect.logError(error.message)),
-              // Effect.zipRight(printMetrics), // <-- Add this line
-            ),
-        ),
-      ),
-      Schedule.spaced('2 seconds'),
-    ),
-    Effect.fork,
-  );
-  yield* _ping;
 
   // Cleanup on exit
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
-      yield* Queue.shutdown(client.restartQueue);
       yield* Effect.logDebug('Program Finalizer');
       yield* Effect.logDebug('Before printing stats');
       yield* printMetrics;
     }),
   );
 
-  // Restart on close events (no polling!)
-  yield* pipe(
-    Stream.fromQueue(client.restartQueue, { shutdown: true }),
-    Stream.tap(() => Effect.logDebug('Queue restarted')),
-    Stream.tap(() => client.restart),
-    Stream.runDrain,
-    Effect.onInterrupt(() =>
-      Effect.logDebug('Queue restart fiber interrupted'),
-    ),
-    // Effect.fork,
-  );
+  yield* Effect.never;
 }).pipe(Effect.catchAll((error) => Effect.logError(error)));
 
 const LoggerLive = Logger.minimumLogLevel(LogLevel.Debug);
